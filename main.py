@@ -8,7 +8,7 @@ Proxy Checker Telegram Bot
 - Threads: configurable via THREAD_COUNT
 
 Requirements:
-    pip install python-telegram-bot==22.8 aiohttp requests
+    pip install python-telegram-bot aiohttp requests
 
 Usage:
     Set BOT_TOKEN below, then: python proxy_checker_bot.py
@@ -129,27 +129,6 @@ def check_proxy(raw_proxy: str) -> Optional[str]:
 
 # ─── HELPERS ─────────────────────────────────────────────────────────────────
 
-def parse_proxy_arguments(args: list[str]) -> list[str]:
-    """Parse one or more /check arguments as individual proxy strings."""
-    if not args:
-        return []
-
-    proxies: list[str] = []
-    for arg in args:
-        value = (arg or "").strip()
-        if not value:
-            continue
-
-        # Telegram splits command arguments on whitespace, so each argument
-        # represents one proxy. Reject values containing embedded whitespace.
-        if any(ch.isspace() for ch in value):
-            continue
-
-        proxies.append(value)
-
-    return proxies[:MAX_PROXIES]
-
-
 def parse_proxy_list(text: str) -> list[str]:
     """Extract one proxy per line, drop blanks and comments."""
     lines = []
@@ -226,6 +205,23 @@ async def help_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"- Max file: {MAX_PROXIES} proxies"
         f"\n- Check endpoints: {len(IP_CHECK_ENDPOINTS)}"
     )
+
+
+def parse_proxy_arguments(args: list[str]) -> list[str]:
+    """Parse /check arguments into individual proxy strings."""
+    if not args:
+        return []
+    values = []
+    for arg in args:
+        for item in re.split(r"[,;]+", arg.strip()):
+            if item.strip():
+                values.append(item.strip())
+    seen=set(); result=[]
+    for item in values:
+        k=item.lower()
+        if k not in seen:
+            seen.add(k); result.append(item)
+    return result[:MAX_PROXIES]
 
 
 async def check_command_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -448,41 +444,40 @@ async def document_hint_handler(update: Update, context: ContextTypes.DEFAULT_TY
 
 # ─── MAIN ────────────────────────────────────────────────────────────────────
 
+async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
+    logger.error("Unhandled update error: %s", context.error, exc_info=context.error)
+
+
 def main():
     if not BOT_TOKEN:
-        print("ERROR: Set BOT_TOKEN environment variable before starting the bot.")
-        print("Example in Pydroid terminal:")
-        print("  export BOT_TOKEN='YOUR_NEW_BOT_TOKEN'")
+        logger.error("BOT_TOKEN is empty.")
         return
 
-    while True:
-        try:
-            app = Application.builder().token(BOT_TOKEN).build()
+    try:
+        app = Application.builder().token(BOT_TOKEN).build()
 
-            app.add_handler(CommandHandler("start", start_handler))
-            app.add_handler(CommandHandler("help", help_handler))
-            app.add_handler(CommandHandler("check", check_command_handler))
-            app.add_handler(CommandHandler("proxy", proxy_command_handler))
-            app.add_handler(
-                MessageHandler(
-                    filters.Document.ALL & ~filters.COMMAND,
-                    document_hint_handler,
-                )
+        app.add_handler(CommandHandler("start", start_handler))
+        app.add_handler(CommandHandler("help", help_handler))
+        app.add_handler(CommandHandler("check", check_command_handler))
+        app.add_handler(CommandHandler("proxy", proxy_command_handler))
+        app.add_handler(
+            MessageHandler(
+                filters.Document.ALL & ~filters.COMMAND,
+                document_hint_handler,
             )
+        )
+        app.add_error_handler(error_handler)
 
-            logger.info("Bot is running...")
-            app.run_polling(
-                drop_pending_updates=True,
-                allowed_updates=Update.ALL_TYPES,
-            )
-            break
+        logger.info("Bot is running...")
+        app.run_polling(
+            drop_pending_updates=True,
+            allowed_updates=Update.ALL_TYPES,
+        )
 
-        except KeyboardInterrupt:
-            logger.info("Bot stopped by user.")
-            break
-        except Exception:
-            logger.exception("Bot crashed; restarting in 5 seconds...")
-            time.sleep(5)
+    except KeyboardInterrupt:
+        logger.info("Bot stopped by user.")
+    except Exception:
+        logger.exception("Bot stopped due to an unrecoverable error.")
 
 
 if __name__ == "__main__":
