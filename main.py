@@ -3,12 +3,12 @@ Proxy Checker Telegram Bot
 ===========================
 - Multi-user concurrent support via asyncio + ThreadPoolExecutor
 - /proxy command: reply to a .txt file containing proxy list
-- Checks each proxy against ipify.org
+- Checks each proxy against multiple ipify endpoints
 - Returns live count + sends live proxies as a .txt file
 - Threads: configurable via THREAD_COUNT
 
 Requirements:
-    pip install python-telegram-bot aiohttp requests
+    pip install python-telegram-bot==20.7 aiohttp requests
 
 Usage:
     Set BOT_TOKEN below, then: python proxy_checker_bot.py
@@ -34,15 +34,23 @@ from telegram.ext import (
     filters,
 )
 
-# ─── CONFIG ──────────────────────────────────────────────────────────────────
+# ─── CONFIG ───────────────────────────────────────────────────────────────────
 
 BOT_TOKEN    = "8531064839:AAFBrCMaGgJ559Eqs-NaGDMEbIbfg3oln9I"       # ← paste your bot token here
-TEST_URL     = "https://api.ipify.org?format=json"
 TIMEOUT      = 8                            # proxy check timeout (seconds)
 THREAD_COUNT = 50                           # concurrent threads per check job
 MAX_PROXIES  = 99999999                        # max proxies accepted per file
 
-# ─── LOGGING ─────────────────────────────────────────────────────────────────
+IP_CHECK_ENDPOINTS = [
+    "https://api.ipify.org",
+    "https://api.ipify.org?format=json",
+    "https://api6.ipify.org",
+    "https://api6.ipify.org?format=json",
+    "https://api64.ipify.org",
+    "https://api64.ipify.org?format=json",
+]
+
+# ─── LOGGING ──────────────────────────────────────────────────────────────────
 
 logging.basicConfig(
     format="%(asctime)s | %(levelname)s | %(message)s",
@@ -79,33 +87,39 @@ def check_single_proxy(raw_proxy: str) -> tuple[bool, str, str]:
         return False, "", "Invalid proxy format"
 
     last_error = "Unknown error"
-    for attempt in range(RETRY_COUNT + 1):
-        try:
-            resp = requests.get(
-                TEST_URL,
-                proxies={"http": normalized, "https": normalized},
-                timeout=SINGLE_PROXY_TIMEOUT,
-            )
-            if resp.status_code == 200:
-                return True, normalized, "HTTP 200"
-            last_error = f"HTTP {resp.status_code}"
-        except requests.exceptions.ProxyError as e:
-            last_error = f"ProxyError: {type(e).__name__}"
-        except requests.exceptions.ConnectTimeout:
-            last_error = "Connect timeout"
-        except requests.exceptions.ReadTimeout:
-            last_error = "Read timeout"
-        except requests.exceptions.SSLError:
-            last_error = "SSL error"
-        except requests.exceptions.ConnectionError:
-            last_error = "Connection error"
-        except requests.exceptions.RequestException as e:
-            last_error = f"Request error: {type(e).__name__}"
-        except Exception as e:
-            last_error = f"Error: {type(e).__name__}"
+    
+    for endpoint in IP_CHECK_ENDPOINTS:
+        for attempt in range(RETRY_COUNT + 1):
+            try:
+                resp = requests.get(
+                    endpoint,
+                    proxies={"http": normalized, "https": normalized},
+                    timeout=SINGLE_PROXY_TIMEOUT,
+                )
+                if resp.status_code == 200:
+                    return True, normalized, f"HTTP 200 via {endpoint}"
+                last_error = f"HTTP {resp.status_code}"
+            except requests.exceptions.ProxyError as e:
+                last_error = f"ProxyError: {type(e).__name__}"
+            except requests.exceptions.ConnectTimeout:
+                last_error = "Connect timeout"
+            except requests.exceptions.ReadTimeout:
+                last_error = "Read timeout"
+            except requests.exceptions.SSLError:
+                last_error = "SSL error"
+            except requests.exceptions.ConnectionError:
+                last_error = "Connection error"
+            except requests.exceptions.RequestException as e:
+                last_error = f"Request error: {type(e).__name__}"
+            except Exception as e:
+                last_error = f"Error: {type(e).__name__}"
 
-        if attempt < RETRY_COUNT:
-            time.sleep(0.25)
+            if attempt < RETRY_COUNT:
+                time.sleep(0.25)
+        
+        # If working on this endpoint, return success
+        if last_error == f"HTTP 200 via {endpoint}":
+            return True, normalized, last_error
 
     return False, normalized, last_error
 
@@ -119,7 +133,7 @@ def parse_single_proxy_argument(text: str) -> Optional[str]:
         return None
     return text
 
-# ─── PROXY FORMAT NORMALIZER (from proxy_bot.py) ────────────────────────────
+# ─── PROXY FORMAT NORMALIZER (from proxy_bot.py) ──────────────────────────────
 
 def auto_fix_proxy_format(raw_proxy: str) -> Optional[str]:
     """
@@ -150,7 +164,7 @@ def auto_fix_proxy_format(raw_proxy: str) -> Optional[str]:
     else:
         core = p
 
-    # Format A: contains '@'  →  user:pass@host:port
+    # Format A: contains '@'  → user:pass@host:port
     if "@" in core:
         auth_part, host_port_part = core.rsplit("@", 1)
         if ":" in host_port_part:
@@ -197,7 +211,7 @@ def check_proxy(raw_proxy: str) -> Optional[str]:
         return None
 
 
-# ─── HELPERS ─────────────────────────────────────────────────────────────────
+# ─── HELPERS ──────────────────────────────────────────────────────────────────
 
 def parse_proxy_list(text: str) -> list[str]:
     """Extract one proxy per line, drop blanks and comments."""
@@ -244,7 +258,7 @@ def build_progress_text(checked: int, total: int, live: int) -> str:
         f"🔄 Checked : `{checked}`"
     )
 
-# ─── COMMAND HANDLERS ────────────────────────────────────────────────────────
+# ─── COMMAND HANDLERS ──────────────────────────────────────────────────────────
 
 async def start_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
@@ -272,7 +286,8 @@ async def help_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "Current Settings:\n"
         f"- Threads: {THREAD_COUNT}\n"
         f"- Timeout: {TIMEOUT}s per proxy\n"
-        f"- Max file: {MAX_PROXIES} proxies"
+        f"- Max file: {MAX_PROXIES} proxies\n"
+        f"- Check endpoints: {len(IP_CHECK_ENDPOINTS)}"
     )
 
 
@@ -460,7 +475,7 @@ async def document_hint_handler(update: Update, context: ContextTypes.DEFAULT_TY
             parse_mode="Markdown",
         )
 
-# ─── MAIN ────────────────────────────────────────────────────────────────────
+# ─── MAIN ──────────────────────────────────────────────────────────────────────
 
 def main():
     if not BOT_TOKEN:
