@@ -8,7 +8,7 @@ Proxy Checker Telegram Bot
 - Threads: configurable via THREAD_COUNT
 
 Requirements:
-    pip install python-telegram-bot aiohttp requests
+    pip install python-telegram-bot==22.8 aiohttp requests
 
 Usage:
     Set BOT_TOKEN below, then: python proxy_checker_bot.py
@@ -128,6 +128,27 @@ def check_proxy(raw_proxy: str) -> Optional[str]:
 
 
 # ─── HELPERS ─────────────────────────────────────────────────────────────────
+
+def parse_proxy_arguments(args: list[str]) -> list[str]:
+    """Parse one or more /check arguments as individual proxy strings."""
+    if not args:
+        return []
+
+    proxies: list[str] = []
+    for arg in args:
+        value = (arg or "").strip()
+        if not value:
+            continue
+
+        # Telegram splits command arguments on whitespace, so each argument
+        # represents one proxy. Reject values containing embedded whitespace.
+        if any(ch.isspace() for ch in value):
+            continue
+
+        proxies.append(value)
+
+    return proxies[:MAX_PROXIES]
+
 
 def parse_proxy_list(text: str) -> list[str]:
     """Extract one proxy per line, drop blanks and comments."""
