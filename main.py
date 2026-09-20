@@ -26,6 +26,7 @@ from typing import Optional
 
 import requests
 from telegram import Update, Document
+from telegram.error import Conflict
 from telegram.ext import (
     Application,
     CommandHandler,
@@ -74,6 +75,50 @@ def mask_proxy(proxy: str) -> str:
         return proxy
     except Exception:
         return proxy
+
+
+def normalize_proxy_format(raw_proxy: str) -> Optional[str]:
+    """
+    Normalize supported proxy formats into a requests-compatible URL:
+        IP:Port              -> http://IP:Port
+        IP:Port:User:Pass    -> http://User:Pass@IP:Port
+        User:Pass@IP:Port    -> http://User:Pass@IP:Port
+        http://...           -> unchanged
+    Returns None if the input is not a recognized proxy format.
+    """
+    if not raw_proxy:
+        return None
+
+    raw = raw_proxy.strip()
+    if not raw:
+        return None
+
+    # Already has a scheme (http/https/socks4/socks5)
+    if "://" in raw:
+        return raw
+
+    # user:pass@host:port
+    if "@" in raw:
+        return f"http://{raw}"
+
+    parts = raw.split(":")
+
+    # host:port
+    if len(parts) == 2:
+        host, port = parts
+        if host and port.isdigit():
+            return f"http://{host}:{port}"
+        return None
+
+    # host:port:user:pass
+    if len(parts) == 4:
+        host, port, user, pw = parts
+        if host and port.isdigit():
+            return f"http://{user}:{pw}@{host}:{port}"
+        return None
+
+    return None
+
 
 def check_single_proxy(raw_proxy: str) -> tuple[bool, str, str]:
     """
@@ -445,7 +490,32 @@ async def document_hint_handler(update: Update, context: ContextTypes.DEFAULT_TY
 # ─── MAIN ────────────────────────────────────────────────────────────────────
 
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
-    logger.error("Unhandled update error: %s", context.error, exc_info=context.error)
+    err = context.error
+
+    # Handle Telegram 409 Conflict — another instance is polling with same token.
+    # Stop this instance cleanly to avoid spamming the log/retry loop.
+    if isinstance(err, Conflict):
+        logger.error(
+            "Conflict: another bot instance is already polling with this token. "
+            "Stopping this instance."
+        )
+        try:
+            await context.application.stop_running()
+        except Exception:
+            pass
+        return
+
+    logger.error("Unhandled update error: %s", err, exc_info=err)
+
+
+async def _post_init(application: Application):
+    """Ensure no webhook is set before polling to avoid startup conflicts."""
+    try:
+        await application.bot.delete_webhook(drop_pending_updates=True)
+        # Give Telegram a moment to release any previous long-poll connection.
+        await asyncio.sleep(2)
+    except Exception as exc:
+        logger.warning("delete_webhook failed: %s", exc)
 
 
 def main():
@@ -454,7 +524,12 @@ def main():
         return
 
     try:
-        app = Application.builder().token(BOT_TOKEN).build()
+        app = (
+            Application.builder()
+            .token(BOT_TOKEN)
+            .post_init(_post_init)
+            .build()
+        )
 
         app.add_handler(CommandHandler("start", start_handler))
         app.add_handler(CommandHandler("help", help_handler))
