@@ -37,7 +37,7 @@ from telegram.ext import (
 
 # ─── CONFIG ──────────────────────────────────────────────────────────────────
 
-BOT_TOKEN    = "8531064839:AAFBrCMaGgJ559Eqs-NaGDMEbIbfg3oln9I"       # ← paste your bot token here
+BOT_TOKEN = os.getenv("BOT_TOKEN")       # ← paste your bot token here
 IP_CHECK_ENDPOINTS = [
     "https://api.ipify.org?format=json",
     "https://api.ipify.org",
@@ -519,8 +519,8 @@ async def _post_init(application: Application):
 
 
 def main():
-    if not BOT_TOKEN:
-        logger.error("BOT_TOKEN is empty.")
+   if not BOT_TOKEN:
+    raise RuntimeError("BOT_TOKEN environment variable is not set")
         return
 
     try:
